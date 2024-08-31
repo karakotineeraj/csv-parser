@@ -16,6 +16,10 @@ type CursorCoordination struct {
 type Model struct {
 	cursorPos CursorCoordination;
 	data [][]string;
+	editMode bool;
+	csvWriter *csv.Writer;
+	fileWriter *os.File;
+	editCursor int;
 }
 
 func (m Model) Init() tea.Cmd {
@@ -24,7 +28,32 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg: 
+	case tea.KeyMsg:
+		if m.editMode {
+			switch msg.Type {
+			case tea.KeyEnter: 
+				m.editMode = false
+			case tea.KeyLeft:
+				if m.editCursor > 0 {
+					m.editCursor--
+				}
+			case tea.KeyRight:
+				if m.editCursor < len(m.data[m.cursorPos.row][m.cursorPos.col]) {
+					m.editCursor++
+				}
+			case tea.KeyBackspace:
+				if m.editCursor > 0 {
+					m.data[m.cursorPos.row][m.cursorPos.col] = m.data[m.cursorPos.row][m.cursorPos.col][:m.editCursor-1] + m.data[m.cursorPos.row][m.cursorPos.col][m.editCursor:]
+					m.editCursor--
+				}
+			case tea.KeyRunes:
+				m.data[m.cursorPos.row][m.cursorPos.col] += msg.String()
+				m.editCursor++
+			}
+
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "j":
 			if m.cursorPos.row < len(m.data) - 1 {
@@ -34,7 +63,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursorPos.row > 0 {
 				m.cursorPos.row--
 			}
-		case "h": 
+			case "h": 
 			if m.cursorPos.col > 0 {
 				m.cursorPos.col--
 			}
@@ -42,6 +71,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursorPos.col < len(m.data[m.cursorPos.row]) - 1 {
 				m.cursorPos.col++
 			}
+		case "w":
+			m.fileWriter.Truncate(0);
+			m.fileWriter.Seek(0, 0);
+			if err := m.csvWriter.WriteAll(m.data); err != nil {
+				return m, nil
+			}
+		case "enter":
+			m.editMode = true
+			m.editCursor = len(m.data[m.cursorPos.row][m.cursorPos.col])
 		case "q":
 			return m, tea.Quit
 		}
@@ -56,7 +94,12 @@ func (m Model) View() string {
 	for i, rowVal := range m.data {
 		for j, val := range rowVal {
 			if i == m.cursorPos.row && j == m.cursorPos.col {
-				s += "> "
+				if m.editMode {
+					s += ">" + val[:m.editCursor] + "|" + val[m.editCursor:] + "\t"
+					continue;
+				} else {
+					s += ">"
+				}
 			}
 
 			s += val + "\t"
@@ -75,22 +118,25 @@ func main() {
 	}
 
 	defer logFile.Close()
-	
+
 	log.SetOutput(logFile)
 
 	csvPath := os.Args[1]
-	fileReader, err := os.Open(csvPath);
+	fileReader, err := os.OpenFile(csvPath, os.O_RDWR, 0646);
 	if err != nil {
 		log.Print("Occured during opening CSV: ", err.Error())
 		return
 	}
 
-	 csvReader := csv.NewReader(fileReader)
-	 csvData, err := csvReader.ReadAll()
-	 if err != nil {
-		 log.Print("Could not read CSV Data: ", err.Error())
-		 return
-	 }
+	csvReader := csv.NewReader(fileReader)
+	csvReader.TrimLeadingSpace = true
+	csvData, err := csvReader.ReadAll()
+	if err != nil {
+		log.Print("Could not read CSV Data: ", err.Error())
+		return
+	}
+
+	csvWriter := csv.NewWriter(fileReader)
 
 	model := Model {
 		cursorPos: CursorCoordination {
@@ -98,9 +144,12 @@ func main() {
 			col: 0,
 		},
 		data: csvData,
+		editMode: false,
+		csvWriter: csvWriter,
+		fileWriter: fileReader,
 	}
-	
-	p := tea.NewProgram(model)
+
+	p := tea.NewProgram(model, tea.WithInput(os.Stdin))
 	if _, err = p.Run(); err != nil {
 		log.Print("Running TUI: ", err.Error())
 		os.Exit(1)
